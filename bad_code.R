@@ -35,5 +35,12 @@ dat_3 = dat2 |>
 
 # Date: 03/04/2025
 
+require(ggplot2)
+library(ggplot2)
+
+
+ggplot(data = dat2, aes(x = treated, y = z)) +
+  geom_boxplot(aes(fill = treated))
+
 
 
