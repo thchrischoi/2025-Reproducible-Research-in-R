@@ -19,9 +19,8 @@ dat = data.frame(x = c(1:10),
                  y = c(seq(6,60,6)),
                  treated = c('trt','untrt','ctr','untrt','trt','ctr','trt','trt','ctr','trt'))
 
-require(dplyr)
-
-dat2 = dplyr::mutate(dat, z = x*y) 
+install.packages('dplyr')
+dat2 = dplyr::mutate(dat, z = x*y)
 
 library(dplyr)
 dat_3 = dat2 |>
@@ -35,7 +34,7 @@ dat_3 = dat2 |>
 
 # Date: 03/04/2025
 
-require(ggplot2)
+install.packages('ggplot2')
 library(ggplot2)
 
 
