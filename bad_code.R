@@ -16,17 +16,13 @@
 ## Make dataframe
 
 dat = data.frame(x = c(1:10),
-                 y = c(seq(6,60,6)),
-                 treated = c('trt','untrt','ctr','untrt','trt','ctr','trt','trt','ctr','trt'))
+                 y = c(seq(6,60,6)), treated = c('trt','untrt','ctr','untrt','trt','ctr','trt','trt','ctr','trt'))
 
 install.packages('dplyr')
 dat2 = dplyr::mutate(dat, z = x*y)
 
 library(dplyr)
-dat_3 = dat2 |>
-  group_by(treated) %>%
-  summarise(z_mean = mean(z)) |>
-  ungroup()
+dat_3 = dat2 |> group_by(treated) %>% summarise(z_mean = mean(z)) |> ungroup()
 
 
 
