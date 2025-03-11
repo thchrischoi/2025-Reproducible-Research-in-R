@@ -1,5 +1,5 @@
 
-# hi chris
+
 # This is bad code
 
 # it works, but it's bad
@@ -33,7 +33,7 @@ dat_3 = dat2 |> group_by(treated) %>% summarise(z_mean = mean(z)) |> ungroup()
 install.packages('ggplot2')
 library(ggplot2)
 
-
+## make a plot? cool it works
 ggplot(data = dat2, aes(x = treated, y = z)) +
   geom_boxplot(aes(fill = treated))
 
