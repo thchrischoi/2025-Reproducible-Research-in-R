@@ -3,49 +3,44 @@ output:
   pdf_document: default
   html_document: default
 ---
-## 2 Step Model 
 
+## 2 Step Model
 
-
-Chrisopher Tsz Hin Choi
-Christopher.Choi@colostate.edu
+Chrisopher Tsz Hin Choi [Christopher.Choi\@colostate.edu](mailto:Christopher.Choi@colostate.edu){.email}
 
 Natural Resource Ecology Lab
 
 2023-01-10
 
+Workflow:
 
-Workflow: 
+-   Import data
 
-* Import data 
-  
-  * raster stack of indicies from landsat 8/9 and Sentinel-2 (generated from IndiciesGeneartion.R script) 
+    -   raster stack of indicies from landsat 8/9 and Sentinel-2 (generated from IndiciesGeneartion.R script)
 
-* Format data
-  
-  * Mask out NAs from raster stack
-  
-  * Subset rasters (remove some topography variables) 
-  
-* Extract raster values using field points 
+-   Format data
 
-* Model binary presence/absence of cheatgrass using field points as independent data and rasters as predictors 
+    -   Mask out NAs from raster stack
 
-* Predict cheatgrass presence/absence across the fire 
+    -   Subset rasters (remove some topography variables)
 
-* Model continuous cheatgrass percent cover using field points as test data and rasters as predictors 
+-   Extract raster values using field points
 
-* Predict cheatgrass percent cover across the fire - Use binary absence prediction to mask out continuous prediction values
+-   Model binary presence/absence of cheatgrass using field points as independent data and rasters as predictors
 
+-   Predict cheatgrass presence/absence across the fire
 
-************************************Start*************************************
+-   Model continuous cheatgrass percent cover using field points as test data and rasters as predictors
 
+-   Predict cheatgrass percent cover across the fire - Use binary absence prediction to mask out continuous prediction values
 
+\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*Start\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*
 
+########################################## 
 
-##########################################
 ### Set Up
-##########################################
+
+########################################## 
 
 ```{r}
 library(rstudioapi)
@@ -61,13 +56,13 @@ library(corrplot)
 set.seed(1422)
 ```
 
+------------------------------------------------------------------------
 
+########################################## 
 
-************************************************************************
-
-##########################################
 ## Data
-##########################################
+
+########################################## 
 
 ```{r}
 ## Table of variables
@@ -107,12 +102,14 @@ evt.metadata <- read.csv('data/Raster/LF16_EVT_200.csv')
 
 ```
 
+########################################## 
 
-##########################################
 ### Data Formatting and Subsetting (including masking)
-##########################################
+
+########################################## 
 
 Masking out NAs from Raster Stack
+
 ```{r}
 # ## Reclass Matrix
 reclass.matrix <- matrix(c(-10000000, 10000000, 1),
@@ -144,16 +141,18 @@ detection.model.rasters <- terra::mask(detection.model.rasters, raster.mask) |>
 ```
 
 Subset rasters
+
 ```{r}
 ## Remove Topo variables other than elevation
 # elevation was kept in DEVELOP script (possibly incorrectly)
 detection.model.rasters <- terra::subset(detection.model.rasters, c(2:4), negate = T)
 ```
 
+########################################## 
 
-##########################################
 ## Extract Values using field points from raster.layers
-##########################################
+
+########################################## 
 
 ```{r}
 ## turn field points into spat vect
@@ -176,11 +175,13 @@ detection.model.variables <- field.points |>
 
 ```
 
-************************************************************************
+------------------------------------------------------------------------
 
-##########################################
+########################################## 
+
 ## First Random Forest Model (binary)
-##########################################
+
+########################################## 
 
 ```{r}
 binary.variables <- detection.model.variables |>
@@ -194,6 +195,7 @@ rf.binary <- randomForest::randomForest(Presence ~ .,
 ```
 
 Model Assessment
+
 ```{r}
 rf.binary 
 ## OOB error: 23.56%. 40% error for 0, 12% error for 1
@@ -203,7 +205,6 @@ randomForest::varImpPlot(rf.binary, n.var=10)
 # partialPlot(rf.binary, binary.variables, elevation)
 
 ```
-
 
 ### Binary Prediction
 
@@ -217,12 +218,13 @@ plot(binary.predict, main = 'binary prediction')
 
 ```
 
+------------------------------------------------------------------------
 
-************************************************************************
+########################################## 
 
-##########################################
 ## Second Random Forest Model (Continuous)
-##########################################
+
+########################################## 
 
 ```{r}
 continuous.variables <- detection.model.variables |>
@@ -236,8 +238,8 @@ rf.continuous <- randomForest::randomForest(Cheatgrass ~ .,
                                             replace = F)
 ```
 
-
 Model Assessment
+
 ```{r}
 rf.continuous
 
@@ -251,7 +253,6 @@ paste('RMSE(%):',sqrt(mean(rf.continuous$mse)))
 # randomForest::partialPlot(x = rf.continuous, pred.data = continuous.variables, x.var = s2_TCW_jun)
 
 ```
-
 
 ### Continous Prediction
 
@@ -268,11 +269,13 @@ plot(continuous.predict,
      )
 ```
 
-************************************************************************
+------------------------------------------------------------------------
 
-##########################################
+########################################## 
+
 ## 2 Step Model (Continous masked with binary)
-##########################################
+
+########################################## 
 
 ```{r}
 ## Create mask using binary prediction
@@ -298,11 +301,10 @@ plot(final.predict,
 
 ```
 
-
 ### Mask by vegetation type
 
-
 Vegetation Type Exploration
+
 ```{r}
 cheatgrass.evt.summary <- terra::extract(evt,
                                  field.points |>
@@ -321,7 +323,6 @@ cheatgrass.evt.summary <- terra::extract(evt,
 cheatgrass.evt.summary
 
 ```
-
 
 ```{r}
 
@@ -414,10 +415,10 @@ plot(field.points |> dplyr::filter(Cheatgrass > 0),
      add = T)
 ```
 
-
 ### Mask by vegetation type 2021
 
-Recreated masking with 2021 data. It seems like they DID NOT use all cover types that had cheatgrass field points in. Using only sagebrush, ponderosa, shrubland and subalpine grassland was enough to mask ~85% of the study area, which is what was reported to be the area masked out in the NASA DEVELOP Tech Report.
+Recreated masking with 2021 data. It seems like they DID NOT use all cover types that had cheatgrass field points in. Using only sagebrush, ponderosa, shrubland and subalpine grassland was enough to mask \~85% of the study area, which is what was reported to be the area masked out in the NASA DEVELOP Tech Report.
+
 ```{r}
 
 # field.points.2021 <- sf::read_sf('C:/Users/cchoi/Documents/ChoiChristopher/NRELProjects/MullenFire/GIS Data/ProjectData/FieldData/2021MullenCheatgrassMonitoring.shp')
@@ -429,6 +430,7 @@ Recreated masking with 2021 data. It seems like they DID NOT use all cover types
 ```
 
 Test summary
+
 ```{r}
 # cheatgrass.evt.summary <- terra::extract(evt,
 #                                  terra::vect(field.points.2021)) |>
@@ -522,11 +524,13 @@ Test summary
 
 ```
 
-************************************************************************
+------------------------------------------------------------------------
 
-##########################################
+########################################## 
+
 ## Binned Version
-##########################################
+
+########################################## 
 
 ```{r}
 binned.matrix <- c(0, 10, 0,
@@ -566,7 +570,6 @@ cells(binned.detection)
 
 ```
 
-
 ### Validation
 
 ```{r}
@@ -601,8 +604,7 @@ rmse <- sqrt(mean((validation.df$Actual - validation.df$Predicted)^2))
 rmse
 ```
 
-
-************************************************************************
+------------------------------------------------------------------------
 
 ```{r}
 ## Binned Detection
@@ -655,18 +657,19 @@ binned.detection.shp <- dplyr::bind_rows(list(detection.10, detection.20, detect
 
 ```
 
-
 ```{r}
 ggplot2::ggplot(data = species.detection.binned) +
   ggplot2::geom_sf(data = mullen) +
   ggplot2::geom_sf(aes(fill = value), color = NA)
 ```
 
-************************************************************************
+------------------------------------------------------------------------
 
-##########################################
+########################################## 
+
 ## Export Output
-##########################################
+
+########################################## 
 
 ```{r}
 ## Continous Prediction (raster)
@@ -681,4 +684,4 @@ sf::write_sf(binned.detection.shp, 'Outputs/MullenCheatgrassCoverBins_2022.shp')
 
 ```
 
-************************************End*************************************
+\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*End\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*\*
