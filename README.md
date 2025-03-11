@@ -4,6 +4,8 @@
 **By:**
 * Maggie Church (GDPE)
 * Christopher Tsz Hin Choi (GDPE, NREL)
+**Workshop Date:**
+* 03/11/2025
 
 ## Powerpoints slides
 * [Click here](https://docs.google.com/presentation/d/1TC64H6Lz-TNPm-L2CjOmqBUc7etk4N5yatqC8UKmK1g/edit?usp=sharing) to access slides used in the workshop.
