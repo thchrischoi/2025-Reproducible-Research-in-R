@@ -1,0 +1,684 @@
+---
+output:
+  pdf_document: default
+  html_document: default
+---
+## 2 Step Model 
+
+
+
+Chrisopher Tsz Hin Choi
+Christopher.Choi@colostate.edu
+
+Natural Resource Ecology Lab
+
+2023-01-10
+
+
+Workflow: 
+
+* Import data 
+  
+  * raster stack of indicies from landsat 8/9 and Sentinel-2 (generated from IndiciesGeneartion.R script) 
+
+* Format data
+  
+  * Mask out NAs from raster stack
+  
+  * Subset rasters (remove some topography variables) 
+  
+* Extract raster values using field points 
+
+* Model binary presence/absence of cheatgrass using field points as independent data and rasters as predictors 
+
+* Predict cheatgrass presence/absence across the fire 
+
+* Model continuous cheatgrass percent cover using field points as test data and rasters as predictors 
+
+* Predict cheatgrass percent cover across the fire - Use binary absence prediction to mask out continuous prediction values
+
+
+************************************Start*************************************
+
+
+
+
+##########################################
+### Set Up
+##########################################
+
+```{r}
+library(rstudioapi)
+library(dplyr)
+library(foreach)
+library(doParallel)
+library(skimr)
+library(sf)
+library(terra)
+library(ggplot2)
+library(corrplot)
+
+set.seed(1422)
+```
+
+
+
+************************************************************************
+
+##########################################
+## Data
+##########################################
+
+```{r}
+## Table of variables
+# detection.model.variables <- read.csv('data/Tables/detection_model_variables.csv')
+
+detection.model.rasters <- terra::rast('data/Raster/detection_model_rasters.tif')
+# source(IndiciesGeneration.R) # <- this script generated model above
+
+## 2022 Field Points
+field.points <- sf::st_read('data/Shapefiles/_2022_Mullen_Cheatgrass_Vegetation_Monitoring.shp') |>
+  dplyr::select(PlotID, Cheatgrass, geometry)
+
+## AOI
+aoi <- sf::st_read('data/Shapefiles/Aoi.shp') |>
+  sf::st_transform(sf::st_crs(detection.model.rasters))
+
+
+#test <- terra::rast('data/Raster/Landsat_2022-08-17.tif')
+
+## LANDFIRE Existing Vegetation Type (2016 REMAP)
+## Cropped and reprojected in ArcGIS Pro
+evt <- terra::rast('data/Raster/LC20_EVT_200_aoi.tif') |>
+  # terra::project(crs(test, proj = T)) |>
+  terra::resample(detection.model.rasters[[1]]) |>
+  terra::crop(terra::vect(aoi)) ## May need to change to spatvector
+  
+## LF EVT 2020
+# evt <- terra::rast('data/Raster/LC20_EVT_220_aoi.tif') |>
+#   # terra::project(crs(test, proj = T)) |>
+#   terra::resample(detection.model.rasters[[1]]) |>
+#   terra::crop(terra::vect(aoi)) ## May need to change to spatvector
+
+## EVT 2016 metadata
+evt.metadata <- read.csv('data/Raster/LF16_EVT_200.csv')
+## EVT 2020 metdata
+# evt.metadata <- read.csv('data/Raster/LF20_EVT_220.csv')
+
+```
+
+
+##########################################
+### Data Formatting and Subsetting (including masking)
+##########################################
+
+Masking out NAs from Raster Stack
+```{r}
+# ## Reclass Matrix
+reclass.matrix <- matrix(c(-10000000, 10000000, 1),
+ncol = 3, byrow = T)
+## Create mask with one image from each month of each sensor
+raster.mask <- sum(detection.model.rasters[[1]], # srtm elevation
+                   detection.model.rasters[[5]], # landsat_blue_jun
+                   detection.model.rasters[[19]], # landsat_blue_aug
+                   detection.model.rasters[[33]], # landsat_blue_sep
+                   detection.model.rasters[[47]], # landsat_blue_oct
+                   detection.model.rasters[[85]], # s2_blue_jun
+                   detection.model.rasters[[99]], # s2_blue_aug
+                   detection.model.rasters[[113]], # s2_blue_sep
+                   detection.model.rasters[[127]], # s2_blue_oct
+                   detection.model.rasters[[141]], # s2_dRed_aug_jun
+                   detection.model.rasters[[149]], # s2_dRed_sep_aug
+                   detection.model.rasters[[157]] # s2_dRed_oct_sep
+                   ) |>
+  terra::classify(reclass.matrix)
+
+detection.model.rasters <- terra::mask(detection.model.rasters, raster.mask) |>
+  na.omit()
+
+# terra::writeRaster(detection.model.rasters, file = 'data/Raster/detection_model_rasters_masked.tif', overwrite = T)
+
+# detection.model.rasters <- terra::rast('data/Raster/detection_model_rasters_masked.tif')
+
+# plot(detection.model.rasters[[1]], main = 'elevation')
+```
+
+Subset rasters
+```{r}
+## Remove Topo variables other than elevation
+# elevation was kept in DEVELOP script (possibly incorrectly)
+detection.model.rasters <- terra::subset(detection.model.rasters, c(2:4), negate = T)
+```
+
+
+##########################################
+## Extract Values using field points from raster.layers
+##########################################
+
+```{r}
+## turn field points into spat vect
+## convert to binary using 0% as threshold
+# field.points.vect <- terra::vect(field.points)
+
+detection.model.variables <- field.points |>
+  dplyr::mutate(Presence = dplyr::case_when(Cheatgrass > 0 ~ 1, T ~ 0) |> as.factor()) |>
+  ## For binary modeling. Threshold for presence is >0% cover
+  cbind(terra::extract(x = detection.model.rasters, terra::vect(field.points))) |> # Sample raster
+  # dplyr::mutate(Presence = as.factor(Presence)) |>
+  sf::st_drop_geometry() |> # Remove geometry
+  tidyr::drop_na() |> # Remove rows with missing data
+  dplyr::as_tibble() |> # Tibbles are nice
+  dplyr::select(-c(PlotID, ID)) ## Remove these that aren't used in modeling
+
+
+# nrow(detection.model.variables)
+# head(detection.model.variables)
+
+```
+
+************************************************************************
+
+##########################################
+## First Random Forest Model (binary)
+##########################################
+
+```{r}
+binary.variables <- detection.model.variables |>
+  dplyr::select(-Cheatgrass)
+
+rf.binary <- randomForest::randomForest(Presence ~ .,
+                                        data = binary.variables,
+                                        ntree = 1000,
+                                        importance = T,
+                                        replace = F)
+```
+
+Model Assessment
+```{r}
+rf.binary 
+## OOB error: 23.56%. 40% error for 0, 12% error for 1
+
+randomForest::varImpPlot(rf.binary, n.var=10)
+
+# partialPlot(rf.binary, binary.variables, elevation)
+
+```
+
+
+### Binary Prediction
+
+```{r}
+binary.predict <- terra::predict(detection.model.rasters,
+                                 rf.binary,
+                                 na.rm = T,
+                                 overwrite = T)
+
+plot(binary.predict, main = 'binary prediction')
+
+```
+
+
+************************************************************************
+
+##########################################
+## Second Random Forest Model (Continuous)
+##########################################
+
+```{r}
+continuous.variables <- detection.model.variables |>
+  dplyr::select(-Presence) |>
+  dplyr::filter(Cheatgrass > 0)
+
+rf.continuous <- randomForest::randomForest(Cheatgrass ~ .,
+                                            data = continuous.variables,
+                                            ntree = 1000,
+                                            importance = T,
+                                            replace = F)
+```
+
+
+Model Assessment
+```{r}
+rf.continuous
+
+
+randomForest::varImpPlot(rf.continuous, n.var=10)
+
+# RMSE (~ 13 %)
+paste('RMSE(%):',sqrt(mean(rf.continuous$mse)))
+
+
+# randomForest::partialPlot(x = rf.continuous, pred.data = continuous.variables, x.var = s2_TCW_jun)
+
+```
+
+
+### Continous Prediction
+
+```{r}
+continuous.predict <- terra::predict(detection.model.rasters,
+                                     rf.continuous,
+                                     #filename = 'data/Outputs/binary_prediction2.tif',
+                                     na.rm = T,
+                                     overwrite = T)
+
+plot(continuous.predict,
+     col = rev(heat.colors(30)),
+     main = 'Continous Prediction'
+     )
+```
+
+************************************************************************
+
+##########################################
+## 2 Step Model (Continous masked with binary)
+##########################################
+
+```{r}
+## Create mask using binary prediction
+binary.reclass.matrix <- matrix(c(-1, 1, NA,
+                                  1, 2, 1),
+                                ncol = 3,
+                                byrow = T, )
+
+binary.mask <- terra::classify(binary.predict, binary.reclass.matrix)
+
+final.predict <- terra::mask(continuous.predict, binary.mask)
+
+# final.predict <- terra::ifel(binary.predict == 1, 0, continuous.predict,
+# # filename = 'ifel.tif',
+# # overwrite = T
+# )
+
+names(final.predict) <- 'predict'
+
+plot(final.predict,
+     col = rev(heat.colors(30)),
+     main = 'final prediction')
+
+```
+
+
+### Mask by vegetation type
+
+
+Vegetation Type Exploration
+```{r}
+cheatgrass.evt.summary <- terra::extract(evt,
+                                 field.points |>
+                                   dplyr::filter(Cheatgrass > 0) |>
+                                   terra::vect()
+                                 ) |>
+  dplyr::select(-ID) |>
+  # unique() |>
+  dplyr::left_join(evt.metadata |>
+                     dplyr::select(VALUE, EVT_NAME),
+                   by = 'EVT_NAME') |>
+  # tidyr::drop_na() |>
+  dplyr::group_by(EVT_NAME) |>
+  dplyr::summarise(Count = n())
+
+cheatgrass.evt.summary
+
+```
+
+
+```{r}
+
+## This method includes the EVT of known cheatgrass locations, however, it is way too large of an area.
+
+## NOTE: After testing of data from 2021, ECT of all cheatgrass field locations were not used. Therefore, the following method will not be used
+## Find out veg type to include
+# cheatgrass.evt <- terra::extract(evt,
+#                                  field.points |>
+#                                    dplyr::filter(Cheatgrass > 0) |>
+#                                    terra::vect()
+#                                  ) |>
+#   dplyr::select(-ID) |>
+#   unique() |>
+#   dplyr::left_join(evt.metadata |>
+#                      dplyr::select(VALUE, EVT_NAME),
+#                    by = 'EVT_NAME') |>
+#   tidyr::drop_na()
+#
+# cheatgrass.evt
+#
+# evt.reclass <- cbind(cheatgrass.evt$VALUE,
+#                      1) |>
+#   rbind(c(7124, 1), # Sagebrush Steppe
+#         c(7125, 1), # Sagebrush Steppe
+#         c(7126, 1), # Sagebrush Steppe
+#         c(7053, 1), # Ponderosa Pine Woodland
+#         c(7054, 1), # Ponderosa Pine Woodland
+#         c(7179, 1), # Ponderosa Pine Woodland
+#         c(7086, 1), # Foothill Shrubland
+#         c(7146, 1)) |> # Subalpine Grassland
+#   unique()
+
+# ## Testing EVT by EVT for further exploration
+# ## Additional Classes to remove
+# ## Reclassification of non-cheatgrass areas to NA
+# evt.reclass <- rbind(c(7124, 1), # Sagebrush Steppe
+#                     c(7125, 1), # Sagebrush Steppe
+#                     c(7126, 1), # Sagebrush Steppe
+#                     c(7053, 1), # Ponderosa Pine Woodland
+#                     c(7054, 1), # Ponderosa Pine Woodland
+#                     c(7179, 1), # Ponderosa Pine Woodland
+#                     c(7086, 1), # Foothill Shrubland
+#                     c(7146, 1), # Subalpine Grassland
+#
+#                     c(7054, 1),
+#                     c(7086, 1),
+#                     c(7011, 1),
+#                     c(7051, 1)
+#                     # c(7050, 1) # <- This is a problem, a tonne of of the whole study area within this category (Rocky Mountain Lodgepole Pine Forest)
+#                     )
+
+
+## Reclassification of non-cheatgrass areas to NA
+evt.reclass <- rbind(c(7124, 1), # Sagebrush Steppe
+                    c(7125, 1), # Sagebrush Steppe
+                    c(7126, 1), # Sagebrush Steppe
+                    c(7053, 1), # Ponderosa Pine Woodland
+                    c(7054, 1), # Ponderosa Pine Woodland
+                    c(7179, 1), # Ponderosa Pine Woodland
+                    c(7086, 1), # Foothill Shrubland
+                    c(7146, 1)) # Subalpine Grassland
+
+
+
+## Create mask with non-cheatgrass areas
+evt.mask <- terra::classify(evt, evt.reclass, others = NA)
+
+
+
+## Mask 2-step model output
+final.predict <- terra::mask(final.predict, evt.mask)
+
+
+## Plot Mask
+plot(evt.mask, col = rev(heat.colors(c(1,3))),
+     main = 'EVT mask')
+
+plot(mullen, col = 'grey')
+
+## Plot Final Prediction
+plot(final.predict,
+     add = T,
+     col = rev(heat.colors(30)),
+     alpha = 0.8,
+     main = 'final prediction (masked)')
+## Add field points
+plot(field.points |> dplyr::filter(Cheatgrass > 0),
+     col = 'black',
+     add = T)
+```
+
+
+### Mask by vegetation type 2021
+
+Recreated masking with 2021 data. It seems like they DID NOT use all cover types that had cheatgrass field points in. Using only sagebrush, ponderosa, shrubland and subalpine grassland was enough to mask ~85% of the study area, which is what was reported to be the area masked out in the NASA DEVELOP Tech Report.
+```{r}
+
+# field.points.2021 <- sf::read_sf('C:/Users/cchoi/Documents/ChoiChristopher/NRELProjects/MullenFire/GIS Data/ProjectData/FieldData/2021MullenCheatgrassMonitoring.shp')
+# 
+# # plot(evt)
+# # plot(field.points.2021$geometry, add = T)
+# 
+# test <- terra::extract(evt, terra::vect(field.points.2021))
+```
+
+Test summary
+```{r}
+# cheatgrass.evt.summary <- terra::extract(evt,
+#                                  terra::vect(field.points.2021)) |>
+#   dplyr::select(-ID) |>
+#   # unique() |>
+#   dplyr::left_join(evt.metadata |>
+#                      dplyr::select(VALUE, EVT_NAME),
+#                    by = 'EVT_NAME') |>
+#   dplyr::group_by(EVT_NAME) |>
+#   dplyr::summarise(Count = n())
+#   # tidyr::drop_na()|>
+#   # dplyr::filter(VALUE != 7050)
+# 
+# cheatgrass.evt.summary
+
+```
+
+```{r}
+
+
+# test <- field.points.2021 |>
+#   dplyr::select(PlotID, Average_Ch, geometry) |>
+#   dplyr::mutate(Average_Ch = ifelse(is.na(Average_Ch) == T, 0, 1)) |>
+#   terra::vect()
+# ## This method includes the EVT of known cheatgrass locations, however, it is way to large of an area
+# ## Find out veg type to include
+# cheatgrass.evt <- terra::extract(evt,
+#                                  test) |>
+#   dplyr::select(-ID) |>
+#   unique() |>
+#   dplyr::left_join(evt.metadata |>
+#                      dplyr::select(VALUE, EVT_NAME),
+#                    by = 'EVT_NAME') |>
+#   tidyr::drop_na()|>
+#   dplyr::filter(VALUE != 7050)
+# 
+# cheatgrass.evt
+# 
+# # evt.reclass <- cbind(cheatgrass.evt$VALUE,
+# #                      1) |>
+# #   rbind(c(7124, 1), # Sagebrush Steppe
+# #         c(7125, 1), # Sagebrush Steppe
+# #         c(7126, 1), # Sagebrush Steppe
+# #         c(7053, 1), # Ponderosa Pine Woodland
+# #         c(7054, 1), # Ponderosa Pine Woodland
+# #         c(7179, 1), # Ponderosa Pine Woodland
+# #         c(7086, 1), # Foothill Shrubland
+# #         c(7146, 1)) |> # Subalpine Grassland
+# #   unique()
+# 
+# 
+# ## Additional Classes to remove
+# ## Reclassification of non-cheatgrass areas to NA
+# evt.reclass <- rbind(c(7124, 1), # Sagebrush Steppe
+#                     c(7125, 1), # Sagebrush Steppe
+#                     c(7126, 1), # Sagebrush Steppe
+#                     c(7053, 1), # Ponderosa Pine Woodland
+#                     c(7054, 1), # Ponderosa Pine Woodland
+#                     c(7179, 1), # Ponderosa Pine Woodland
+#                     c(7086, 1), # Foothill Shrubland
+#                     c(7146, 1)) # Subalpine Grassland
+# 
+# ## Create mask with non-cheatgrass areas
+# evt.mask2 <- terra::classify(evt, evt.reclass, others = NA)
+# 
+# plot(evt.mask2, col = rev(heat.colors(c(1,3))))
+# plot(evt.mask, add = T)
+# 
+# ## Mask 2-step model output
+# final.predict3 <- terra::mask(final.predict, evt.mask2)
+# 
+# 
+# plot(final.predict3,
+#      col = rev(heat.colors(30)),
+#      alpha = 0.8,
+#      main = 'final prediction (masked)')
+# 
+# plot(test ,
+#      col = 'black',
+#      add = T)
+# 
+# 
+# 
+# 
+# 
+# terra::mask(evt, vect(mullen)) |> terra::cells() |> length()
+# terra::mask(evt, vect(mullen)) |> plot()
+# 
+# evt |> mask(vect(mullen)) |> mask(evt.mask2) |> terra::cells() |> length()
+# evt |> mask(vect(mullen)) |> mask(evt.mask2) |> plot()
+
+```
+
+************************************************************************
+
+##########################################
+## Binned Version
+##########################################
+
+```{r}
+binned.matrix <- c(0, 10, 0,
+                   10, 20, 10,
+                   20, 30, 20,
+                   30, 40, 30,
+                   40, 50, 40) |>
+  matrix(ncol = 3, byrow = T)
+
+
+binned.detection <- classify(final.predict, binned.matrix)
+
+plot(binned.detection)
+
+```
+
+```{r}
+
+# data.frame(Bin = c(0, 10, 20, 30, 40),
+#            Count = c(global(binned.detection == 0, fun = 'sum', na.rm = T),
+#                      global(binned.detection == 10, fun = 'sum', na.rm = T),
+#                      global(binned.detection == 20, fun = 'sum', na.rm = T),
+#                      global(binned.detection == 30, fun = 'sum', na.rm = T),
+#                      global(binned.detection == 40, fun = 'sum', na.rm = T))
+#            )
+
+# convert pixels to m2 to acres
+global(binned.detection == 0, fun = 'sum', na.rm = T) #* 900 / 4046.86
+global(binned.detection == 10, fun = 'sum', na.rm = T) #* 900 / 4046.86
+global(binned.detection == 20, fun = 'sum', na.rm = T) #* 900 / 4046.86
+global(binned.detection == 30, fun = 'sum', na.rm = T) #* 900 / 4046.86
+global(binned.detection == 40, fun = 'sum', na.rm = T) #* 900 / 4046.86
+
+cellSize(binned.detection)
+
+cells(binned.detection)
+
+```
+
+
+### Validation
+
+```{r}
+validation.df <- cbind(field.points$Cheatgrass,
+                       terra::extract(final.predict, terra::vect(field.points))
+                       ) |>
+  dplyr::rename(Actual = `field.points$Cheatgrass`,
+                Predicted = predict) |>
+  dplyr::select(-ID) |>
+  tidyr::drop_na()
+
+plot(validation.df$Actual, validation.df$Predicted,
+     main = 'Predicted vs Actual',
+     xlab = 'Predicted',
+     ylab = 'Acutal',
+     xlim = c(0,60),
+     ylim = c(0,60))
+abline(a = 0, b = 1, lty =2)
+abline(lm(validation.df$Actual ~ validation.df$Predicted, data = validation.df), 
+       col= 'red')
+legend(0,60, legend = c("Regression line (R-squared: 0.90)", "Reference line"),
+       col=c("red", "black"), lty=1:2, cex=0.6)
+
+
+## evaluate the sum of least squares model
+validation <- lm(Actual ~ Predicted, data = validation.df) 
+
+summary(validation)
+
+rmse <- sqrt(mean((validation.df$Actual - validation.df$Predicted)^2))
+
+rmse
+```
+
+
+************************************************************************
+
+```{r}
+## Binned Detection
+
+##########################################
+## Subset pixels by cover into individual features
+##########################################
+
+## function for subsetting and turning to .shp
+# raster = species detection raster (continuous)
+# min.cover = bin minimum
+# max.cover = bin maximum
+
+subset.detection <- function(raster, min.cover, max.cover){
+  
+  ## Define reclassification matrix
+  m <- matrix(c(0, min.cover, NA,
+                min.cover, max.cover, max.cover,0,
+                max.cover, 10000, NA
+                ), 
+              ncol = 3, 
+              byrow = T)
+  
+  ## Reclassify and turn to sf object
+  binned.polygon <- terra::classify(raster, m) |>
+    terra::as.polygons() |>
+    sf::st_as_sf() |>
+    sf::st_union()|>
+    data.frame() |>
+    dplyr::mutate(value = max.cover) |>
+    sf::st_as_sf()
+  
+  
+  ## Add Value
+  #binned.polygon$value = max.cover
+  
+  return(binned.polygon)
+  
+}
+
+## Subset to 10% bins
+detection.10 <- subset.detection(final.predict,  0, 10) 
+detection.20 <- subset.detection(final.predict, 10, 20)
+detection.30 <- subset.detection(final.predict, 20, 30)
+detection.40 <- subset.detection(final.predict, 30, 40)
+
+############################
+## Combine objects
+binned.detection.shp <- dplyr::bind_rows(list(detection.10, detection.20, detection.30, detection.40))
+
+```
+
+
+```{r}
+ggplot2::ggplot(data = species.detection.binned) +
+  ggplot2::geom_sf(data = mullen) +
+  ggplot2::geom_sf(aes(fill = value), color = NA)
+```
+
+************************************************************************
+
+##########################################
+## Export Output
+##########################################
+
+```{r}
+## Continous Prediction (raster)
+terra::writeRaster(final.predict, 'Outputs/MullenCheatgrassCover_2022.tif', overwrite = T)
+
+## Binned Prediction (raster)
+terra::writeRaster(binned.detection, 'Outputs/MullenCheatgrassCoverBins_2022.tif')
+
+## Binned Prediction (shapefile)
+sf::write_sf(binned.detection.shp, 'Outputs/MullenCheatgrassCoverBins_2022.shp')
+
+
+```
+
+************************************End*************************************
